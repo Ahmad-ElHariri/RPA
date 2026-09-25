@@ -1,13 +1,18 @@
 """Shared action registry, result models, and element validation."""
+
 from __future__ import annotations
-import re
+
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
+from importlib import import_module
 from typing import Any
+
 from playwright.async_api import ElementHandle, Error as PlaywrightError, Locator, Page
-from backend.config import lebanon_now, Settings
+
+from backend.config import Settings, lebanon_now
+
 
 class Outcome(StrEnum):
     SUCCESS = "success"
@@ -60,6 +65,7 @@ class ActionDefinition:
 
 
 _ACTIONS: dict[str, ActionDefinition] = {}
+_OLD_ACTIONS: dict[str, ActionDefinition] = {}
 
 
 class _CandidateError(RuntimeError):
@@ -72,9 +78,14 @@ def _now() -> str:
 
 def _register(*, writes_data: bool) -> Callable[[Action], Action]:
     def decorator(action: Action) -> Action:
-        if action.__name__ in _ACTIONS:
+        registry = (
+            _OLD_ACTIONS
+            if action.__module__ == "backend.old_core_global_changes"
+            else _ACTIONS
+        )
+        if action.__name__ in registry:
             raise ValueError(f"Duplicate action name: {action.__name__}")
-        _ACTIONS[action.__name__] = ActionDefinition(action, writes_data)
+        registry[action.__name__] = ActionDefinition(action, writes_data)
         return action
 
     return decorator
@@ -129,29 +140,33 @@ async def _require_one(
         await page.wait_for_timeout(250)
 
 
-def list_actions() -> tuple[str, ...]:
-    """Return stable public action names for CLIs or future user interfaces."""
-    import core_global_changes  # noqa: F401
-    return tuple(sorted(_ACTIONS))
+def _registry(old: bool) -> dict[str, ActionDefinition]:
+    import_module("backend.old_core_global_changes" if old else "functions")
+    return _OLD_ACTIONS if old else _ACTIONS
 
 
-async def run_action(name: str, page: Page, settings: Settings) -> ActionReport:
+def list_actions(*, old: bool = False) -> tuple[str, ...]:
+    """Return new actions by default, or preserved legacy actions for the CLI."""
+    return tuple(sorted(_registry(old)))
+
+
+async def run_action(
+    name: str, page: Page, settings: Settings, *, old: bool = False
+) -> ActionReport:
     """Run a named action without coupling callers to its implementation."""
-    list_actions()
+    registry = _registry(old)
     try:
-        definition = _ACTIONS[name]
+        definition = registry[name]
     except KeyError as exc:
-        available = ", ".join(list_actions()) or "none"
+        available = ", ".join(list_actions(old=old)) or "none"
         raise ValueError(f"Unknown action {name!r}. Available actions: {available}") from exc
     return await definition.function(page, settings)
 
 
-def action_writes_data(name: str) -> bool:
+def action_writes_data(name: str, *, old: bool = False) -> bool:
     """Return whether an action can modify Airtable state."""
-    list_actions()
+    registry = _registry(old)
     try:
-        return _ACTIONS[name].writes_data
+        return registry[name].writes_data
     except KeyError as exc:
         raise ValueError(f"Unknown action {name!r}") from exc
-
-

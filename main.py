@@ -13,8 +13,14 @@ from playwright.sync_api import Error as PlaywrightError
 
 from backend.airtable_actions import list_actions
 from backend.browser import BrowserLaunchError, BrowserSession, NavigationError
-from backend.config import AppConfig, Settings, configure_logging, load_apps, _validate_airtable_url
-from backend.inspector import InspectionRecorder, install_inspector, wait_for_inspections, capture_page_structure
+from backend.config import (
+    AppConfig,
+    Settings,
+    _validate_airtable_url,
+    configure_logging,
+    load_apps,
+)
+from backend.recorder import ClickRecorder, install_recorder, wait_for_recording
 from backend.reporting import generate_excel_report
 from backend.runner import ConcurrentRunner
 
@@ -37,35 +43,45 @@ def _parser() -> argparse.ArgumentParser:
     subcommands = parser.add_subparsers(dest="command", required=True)
 
     inspect_command = subcommands.add_parser(
-        "inspect", help="Open one Airtable app and capture ALT-clicked elements"
+        "inspect", help="Record the DOM structure of normal clicks"
     )
     inspect_target = inspect_command.add_mutually_exclusive_group()
     inspect_target.add_argument("--app", help="App name from apps.json")
     inspect_target.add_argument("--url", help="Explicit Airtable URL")
-    inspect_command.add_argument("--snapshot", action="store_true",
-                                 help="Capture page/frame structure automatically and exit")
-    inspect_command.add_argument("--label", default="page",
-                                 help="Task or step name included in inspection filenames")
+    inspect_command.add_argument(
+        "--label",
+        default="page",
+        help="Task or step name included in inspection filenames",
+    )
 
-    run_command = subcommands.add_parser(
-        "run", help="Run actions concurrently across configured apps"
-    )
-    run_command.add_argument("actions", nargs="+", choices=list_actions())
-    run_target = run_command.add_mutually_exclusive_group()
-    run_target.add_argument("--url", help="Run on one explicit Airtable URL")
-    run_target.add_argument(
-        "--app",
-        action="append",
-        dest="apps",
-        help="Run only this named app; may be provided more than once",
-    )
-    run_command.add_argument(
-        "--concurrency",
-        type=_positive_int,
-        help="Override the CONCURRENCY setting for this run",
+    def add_run_command(name: str, help_text: str, *, old: bool = False) -> None:
+        command = subcommands.add_parser(name, help=help_text)
+        command.add_argument("actions", nargs="+", choices=list_actions(old=old))
+        target = command.add_mutually_exclusive_group()
+        target.add_argument("--url", help="Run on one explicit Airtable URL")
+        target.add_argument(
+            "--app",
+            action="append",
+            dest="apps",
+            help="Run only this named app; may be provided more than once",
+        )
+        command.add_argument(
+            "--concurrency",
+            type=_positive_int,
+            help="Override the CONCURRENCY setting for this run",
+        )
+
+    add_run_command("run", "Run new functions from functions.py")
+    add_run_command(
+        "run-old",
+        "Manually run preserved functions from backend/old_core_global_changes.py",
+        old=True,
     )
 
     subcommands.add_parser("list-actions", help="List registered action names")
+    subcommands.add_parser(
+        "list-old-actions", help="List preserved legacy action names"
+    )
     subcommands.add_parser("list-apps", help="List configured app names")
     return parser
 
@@ -89,30 +105,32 @@ def _open_and_inspect(
     apps: tuple[AppConfig, ...],
     app_name: str | None,
     explicit_url: str | None,
-    snapshot: bool = False,
     label: str = "page",
 ) -> int:
     selected = _select_apps(apps, [app_name] if app_name else None)
     target_url = explicit_url or selected[0].url
     matching_app = next((app for app in apps if app.url == target_url), None)
     base_id = re.search(r"/(app[A-Za-z0-9]+)", target_url)
-    inspection_name = (matching_app.name if matching_app else
-                       base_id.group(1) if base_id else "airtable")
+    inspection_name = (
+        matching_app.name
+        if matching_app
+        else base_id.group(1)
+        if base_id
+        else "airtable"
+    )
     with BrowserSession(settings) as browser:
         assert browser.context is not None
-        recorder = InspectionRecorder(settings.inspections_dir, inspection_name, label)
-        install_inspector(browser.context, recorder)
+        recorder = ClickRecorder(settings.inspections_dir, inspection_name, label)
+        install_recorder(browser.context, recorder)
         page = browser.navigate(target_url)
         print(f"Inspection file: {recorder.path}", flush=True)
-        if snapshot:
-            page.locator('header[data-testid="appTopbar"]').wait_for()
-            page.wait_for_timeout(1000)
-            print(f"Page structure: {capture_page_structure(page, settings.inspections_dir, inspection_name, label)}")
-            return 0
         try:
-            wait_for_inspections(page)
+            wait_for_recording(page)
         except KeyboardInterrupt:
-            print(f"\nInspection complete. Records: {recorder.path}")
+            print("\nRecording stopped.")
+        finally:
+            recorder.finish()
+            print(f"Recording complete: {recorder.path}")
     return 0
 
 
@@ -121,11 +139,14 @@ def _run(
     apps: tuple[AppConfig, ...],
     actions: tuple[str, ...],
     concurrency: int | None,
+    *,
+    old: bool = False,
 ) -> int:
     runner = ConcurrentRunner(
         settings,
         apps,
         concurrency=concurrency,
+        old=old,
     )
     summary = asyncio.run(runner.run(actions))
     report_path = generate_excel_report(summary, settings.reports_dir)
@@ -144,12 +165,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "list-actions":
             print("\n".join(list_actions()))
             return 0
+        if args.command == "list-old-actions":
+            print("\n".join(list_actions(old=True)))
+            return 0
         if args.command == "list-apps":
             print("\n".join(app.name for app in apps))
             return 0
         if args.command == "inspect":
-            return _open_and_inspect(settings, apps, args.app, args.url, args.snapshot, args.label)
-        if args.command == "run":
+            return _open_and_inspect(settings, apps, args.app, args.url, args.label)
+        if args.command in {"run", "run-old"}:
             selected_apps = (
                 (AppConfig(name="URL trial", url=_validate_airtable_url(args.url, "Run URL")),)
                 if args.url else _select_apps(apps, args.apps)
@@ -159,6 +183,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 selected_apps,
                 tuple(args.actions),
                 args.concurrency,
+                old=args.command == "run-old",
             )
         raise AssertionError(f"Unhandled command: {args.command}")
     except (ValueError, BrowserLaunchError, NavigationError, PlaywrightError) as exc:

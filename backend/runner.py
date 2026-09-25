@@ -10,7 +10,12 @@ from pathlib import Path
 
 from playwright.async_api import Error as PlaywrightError, Page
 
-from backend.airtable_actions import ActionReport, action_writes_data, failed_action_report, run_action
+from backend.airtable_actions import (
+    ActionReport,
+    action_writes_data,
+    failed_action_report,
+    run_action,
+)
 from backend.browser import AsyncBrowserSession, BrowserLaunchError, NavigationError
 from backend.config import lebanon_now, AppConfig, Settings
 
@@ -64,9 +69,11 @@ class ConcurrentRunner:
         apps: tuple[AppConfig, ...],
         *,
         concurrency: int | None = None,
+        old: bool = False,
     ) -> None:
         self.settings = settings
         self.apps = apps
+        self.old = old
         self.concurrency = settings.concurrency if concurrency is None else concurrency
         if self.concurrency <= 0:
             raise ValueError("Concurrency must be greater than zero")
@@ -77,7 +84,7 @@ class ConcurrentRunner:
         if len(actions) != len(set(actions)):
             raise ValueError("The same action cannot be requested twice in one run")
         for action in actions:
-            action_writes_data(action)  # Validate before Chrome is launched.
+            action_writes_data(action, old=self.old)  # Validate before Chrome launch.
 
         summary = RunSummary(
             actions=actions,
@@ -214,7 +221,7 @@ class ConcurrentRunner:
         LOGGER.info("Running %s for app %s", action, app.name)
         try:
             await browser.navigate(page, app.url)
-            report = await run_action(action, page, self.settings)
+            report = await run_action(action, page, self.settings, old=self.old)
             report.target_url = app.url
             report.final_url = page.url
         except (NavigationError, PlaywrightError) as exc:

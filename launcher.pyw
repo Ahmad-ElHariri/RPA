@@ -1,34 +1,43 @@
 """Double-click to inspect Airtable pages or run registered workflows."""
 
-from pathlib import Path
 import os
 import queue
 import subprocess
 import sys
 import threading
 import tkinter as tk
+from pathlib import Path
 from tkinter import messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 from backend.airtable_actions import list_actions
-from backend.config import Settings, load_apps, _validate_airtable_url
+from backend.config import AppConfig, Settings, _validate_airtable_url, load_apps
 
 
 ROOT = Path(__file__).resolve().parent
+APP_FILES = ("apps.json", "15-PH-apps.json")
 
 
-def build_arguments(mode: str, function: str, target: str, url: str) -> list[str]:
+def load_inventory(filename: str) -> tuple[AppConfig, ...]:
+    if filename not in APP_FILES:
+        raise ValueError("Choose apps.json or 15-PH-apps.json.")
+    return load_apps(ROOT / filename)
+
+
+def build_arguments(
+    mode: str, function: str, url: str, app_names: tuple[str, ...]
+) -> list[str]:
     if mode not in {"Inspect", "Run"}:
         raise ValueError("Choose Inspect or Run.")
-    if target not in {"One URL", "All apps in apps.json"}:
-        raise ValueError("Choose One URL or All apps.")
     if mode == "Inspect":
         return ["inspect", "--url", _validate_airtable_url(url, "Inspection URL")]
     if function not in list_actions():
         raise ValueError("Choose an available function.")
+    if not app_names:
+        raise ValueError("Select at least one app.")
     args = ["run", function]
-    if target == "One URL":
-        args += ["--url", _validate_airtable_url(url, "Run URL")]
+    for name in app_names:
+        args += ["--app", name]
     return args
 
 
@@ -36,8 +45,8 @@ class Launcher:
     def __init__(self, window: tk.Tk) -> None:
         self.window = window
         window.title("Airtable automation")
-        window.geometry("820x650")
-        window.minsize(680, 600)
+        window.geometry("900x760")
+        window.minsize(760, 680)
         window.tk.call("tk", "scaling", 96 / 72)
         window.configure(background="#f3f5fa")
         window.option_add("*Font", ("Segoe UI", 10))
@@ -45,8 +54,9 @@ class Launcher:
         self.busy = False
         self.mode = tk.StringVar(value="Inspect")
         self.function = tk.StringVar()
-        self.target = tk.StringVar(value="One URL")
+        self.inventory = tk.StringVar(value=APP_FILES[0])
         self.url = tk.StringVar()
+        self.apps: tuple[AppConfig, ...] = ()
         self.status = tk.StringVar(value="Ready when you are")
         self.artifacts = {"inspection": None, "report": None}
         self.settings = Settings.from_env()
@@ -59,16 +69,71 @@ class Launcher:
         style.configure("TLabel", background="#ffffff", foreground="#26324b")
         style.configure("Muted.TLabel", foreground="#69758c", font=("Segoe UI", 9))
         style.configure("Field.TLabel", font=("Segoe UI", 10, "bold"))
-        style.configure("TEntry", padding=9, fieldbackground="#f8f9fc", bordercolor="#dce2ee", lightcolor="#dce2ee", darkcolor="#dce2ee")
-        style.configure("TCombobox", padding=8, fieldbackground="#f8f9fc", background="#eef1f8", bordercolor="#dce2ee", arrowcolor="#63708b")
-        style.map("TCombobox", fieldbackground=[("readonly", "#f8f9fc"), ("disabled", "#eef1f5")], foreground=[("disabled", "#8993a7")])
-        style.configure("Primary.TButton", background="#6554d9", foreground="#ffffff", padding=(24, 11), borderwidth=0, font=("Segoe UI", 10, "bold"))
-        style.map("Primary.TButton", background=[("disabled", "#d5d2ee"), ("active", "#5141bf")], foreground=[("disabled", "#88819f")])
-        style.configure("Link.TButton", background="#edf0fc", foreground="#5141bf", padding=(14, 9), borderwidth=0)
-        style.map("Link.TButton", background=[("active", "#e0e5fa")], foreground=[("disabled", "#9aa3b7")])
-        style.configure("Mode.TRadiobutton", background="#eef1f8", foreground="#62708a", padding=(22, 10), indicatoron=False, font=("Segoe UI", 10, "bold"))
-        style.map("Mode.TRadiobutton", background=[("selected", "#6554d9"), ("active", "#e4e8f5")], foreground=[("selected", "white"), ("disabled", "#9aa3b7")])
-        style.configure("Activity.Horizontal.TProgressbar", background="#6554d9", troughcolor="#e8eaf5", borderwidth=0)
+        style.configure(
+            "TEntry",
+            padding=9,
+            fieldbackground="#f8f9fc",
+            bordercolor="#dce2ee",
+            lightcolor="#dce2ee",
+            darkcolor="#dce2ee",
+        )
+        style.configure(
+            "TCombobox",
+            padding=8,
+            fieldbackground="#f8f9fc",
+            background="#eef1f8",
+            bordercolor="#dce2ee",
+            arrowcolor="#63708b",
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", "#f8f9fc"), ("disabled", "#eef1f5")],
+            foreground=[("disabled", "#8993a7")],
+        )
+        style.configure(
+            "Primary.TButton",
+            background="#6554d9",
+            foreground="#ffffff",
+            padding=(24, 11),
+            borderwidth=0,
+            font=("Segoe UI", 10, "bold"),
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("disabled", "#d5d2ee"), ("active", "#5141bf")],
+            foreground=[("disabled", "#88819f")],
+        )
+        style.configure(
+            "Link.TButton",
+            background="#edf0fc",
+            foreground="#5141bf",
+            padding=(14, 9),
+            borderwidth=0,
+        )
+        style.map(
+            "Link.TButton",
+            background=[("active", "#e0e5fa")],
+            foreground=[("disabled", "#9aa3b7")],
+        )
+        style.configure(
+            "Mode.TRadiobutton",
+            background="#eef1f8",
+            foreground="#62708a",
+            padding=(22, 10),
+            indicatoron=False,
+            font=("Segoe UI", 10, "bold"),
+        )
+        style.map(
+            "Mode.TRadiobutton",
+            background=[("selected", "#6554d9"), ("active", "#e4e8f5")],
+            foreground=[("selected", "white"), ("disabled", "#9aa3b7")],
+        )
+        style.configure(
+            "Activity.Horizontal.TProgressbar",
+            background="#6554d9",
+            troughcolor="#e8eaf5",
+            borderwidth=0,
+        )
 
         # 2. Configure the operation in a compact card above the activity panel.
         body = ttk.Frame(window, padding=(24, 18))
@@ -82,23 +147,87 @@ class Launcher:
         modes.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 15))
         self.mode_buttons = []
         for mode in ("Inspect", "Run"):
-            control = ttk.Radiobutton(modes, text=mode, value=mode, variable=self.mode, command=self.refresh, style="Mode.TRadiobutton")
+            control = ttk.Radiobutton(
+                modes,
+                text=mode,
+                value=mode,
+                variable=self.mode,
+                command=self.refresh,
+                style="Mode.TRadiobutton",
+            )
             control.pack(side="left", padx=(0, 4))
             self.mode_buttons.append(control)
 
-        ttk.Label(card, text="Function", style="Field.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 18))
-        self.function_box = ttk.Combobox(card, textvariable=self.function, values=list_actions(), state="readonly")
+        ttk.Label(card, text="Function", style="Field.TLabel").grid(
+            row=1, column=0, sticky="w", padx=(0, 18)
+        )
+        self.function_box = ttk.Combobox(
+            card,
+            textvariable=self.function,
+            values=list_actions(),
+            state="readonly",
+        )
         self.function_box.grid(row=1, column=1, sticky="ew", pady=5)
         if list_actions():
             self.function.set(list_actions()[0])
-        ttk.Label(card, text="Target", style="Field.TLabel").grid(row=2, column=0, sticky="w")
-        self.target_box = ttk.Combobox(card, textvariable=self.target, state="readonly")
-        self.target_box.grid(row=2, column=1, sticky="ew", pady=5)
-        self.target_box.bind("<<ComboboxSelected>>", self.refresh)
-        ttk.Label(card, text="Airtable URL", style="Field.TLabel").grid(row=3, column=0, sticky="w")
+        self.inventory_label = ttk.Label(
+            card, text="App file", style="Field.TLabel"
+        )
+        self.inventory_label.grid(row=2, column=0, sticky="nw", pady=(10, 0))
+        self.inventory_box = ttk.Combobox(
+            card,
+            textvariable=self.inventory,
+            values=APP_FILES,
+            state="readonly",
+        )
+        self.inventory_box.grid(row=2, column=1, sticky="ew", pady=5)
+        self.inventory_box.bind("<<ComboboxSelected>>", self.reload_apps)
+
+        self.apps_label = ttk.Label(card, text="Apps", style="Field.TLabel")
+        self.apps_label.grid(row=3, column=0, sticky="nw", pady=(10, 0))
+        app_picker = ttk.Frame(card, style="Card.TFrame")
+        app_picker.grid(row=3, column=1, sticky="ew", pady=5)
+        app_picker.columnconfigure(0, weight=1)
+        self.apps_list = tk.Listbox(
+            app_picker,
+            selectmode="extended",
+            exportselection=False,
+            height=6,
+            background="#f8f9fc",
+            foreground="#26324b",
+            selectbackground="#6554d9",
+            selectforeground="#ffffff",
+            relief="solid",
+            borderwidth=1,
+        )
+        app_scrollbar = ttk.Scrollbar(
+            app_picker, orient="vertical", command=self.apps_list.yview
+        )
+        self.apps_list.configure(yscrollcommand=app_scrollbar.set)
+        self.apps_list.grid(row=0, column=0, sticky="nsew")
+        app_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.select_all_button = ttk.Button(
+            app_picker, text="Select all", command=self.select_all_apps
+        )
+        self.select_all_button.grid(row=1, column=0, sticky="w", pady=(5, 0))
+        self.clear_button = ttk.Button(
+            app_picker, text="Clear", command=lambda: self.apps_list.selection_clear(0, "end")
+        )
+        self.clear_button.grid(row=1, column=1, sticky="e", pady=(5, 0))
+        self.app_picker = app_picker
+
+        self.url_label = ttk.Label(
+            card, text="Airtable URL", style="Field.TLabel"
+        )
+        self.url_label.grid(row=4, column=0, sticky="w")
         self.url_entry = ttk.Entry(card, textvariable=self.url)
-        self.url_entry.grid(row=3, column=1, sticky="ew", pady=5)
-        self.button = ttk.Button(modes, text="Inspect page", command=self.start, style="Primary.TButton")
+        self.url_entry.grid(row=4, column=1, sticky="ew", pady=5)
+        self.button = ttk.Button(
+            modes,
+            text="Inspect page",
+            command=self.start,
+            style="Primary.TButton",
+        )
         self.button.pack(side="right")
 
         activity = ttk.Frame(body, style="Card.TFrame", padding=18)
@@ -108,38 +237,103 @@ class Launcher:
         ttk.Label(top, text="Logs", font=("Segoe UI", 11, "bold")).pack(side="left")
         self.status_label = ttk.Label(top, textvariable=self.status, style="Muted.TLabel")
         self.status_label.pack(side="right")
-        self.progress = ttk.Progressbar(activity, mode="indeterminate", style="Activity.Horizontal.TProgressbar")
+        self.progress = ttk.Progressbar(
+            activity, mode="indeterminate", style="Activity.Horizontal.TProgressbar"
+        )
         self.progress.pack(fill="x", pady=(0, 10))
-        self.output = ScrolledText(activity, height=7, state="disabled", wrap="word", background="#17243e", foreground="#dbe4f4", insertbackground="white", font=("Consolas", 9), relief="flat", borderwidth=0, padx=12, pady=10)
+        self.output = ScrolledText(
+            activity,
+            height=7,
+            state="disabled",
+            wrap="word",
+            background="#17243e",
+            foreground="#dbe4f4",
+            insertbackground="white",
+            font=("Consolas", 9),
+            relief="flat",
+            borderwidth=0,
+            padx=12,
+            pady=10,
+        )
         self.output.pack(fill="both", expand=True)
 
         # 3. Open only files announced by this operation, once they exist on disk.
         links = ttk.Frame(body, style="Card.TFrame", padding=(18, 12))
         links.grid(row=2, column=0, sticky="ew", pady=(8, 0))
-        self.inspection_button = ttk.Button(links, text="Open inspection", style="Link.TButton", state="disabled", command=lambda: self.open_artifact("inspection"))
+        self.inspection_button = ttk.Button(
+            links,
+            text="Open inspection",
+            style="Link.TButton",
+            state="disabled",
+            command=lambda: self.open_artifact("inspection"),
+        )
         self.inspection_button.pack(side="left", padx=(0, 8))
-        self.report_button = ttk.Button(links, text="Open report", style="Link.TButton", state="disabled", command=lambda: self.open_artifact("report"))
+        self.report_button = ttk.Button(
+            links,
+            text="Open report",
+            style="Link.TButton",
+            state="disabled",
+            command=lambda: self.open_artifact("report"),
+        )
         self.report_button.pack(side="left")
-        try:
-            self.url.set(load_apps(self.settings.apps_file)[0].url)
-        except ValueError as exc:
-            self.append(f"Settings: {exc}\n")
+        self.reload_apps()
+        if self.apps:
+            self.url.set(self.apps[0].url)
         self.refresh()
         window.protocol("WM_DELETE_WINDOW", self.close)
         window.after(100, self.poll)
 
-    def refresh(self, event=None) -> None:
+    def reload_apps(self, _event=None) -> None:
+        self.apps_list.delete(0, "end")
+        try:
+            self.apps = load_inventory(self.inventory.get())
+        except ValueError as exc:
+            self.apps = ()
+            self.append(f"App file: {exc}\n")
+            return
+        for app in self.apps:
+            self.apps_list.insert("end", f"{app.name}  —  {app.url}")
+        self.select_all_apps()
+
+    def select_all_apps(self) -> None:
+        if self.apps:
+            self.apps_list.selection_set(0, "end")
+
+    def selected_app_names(self) -> tuple[str, ...]:
+        return tuple(self.apps[index].name for index in self.apps_list.curselection())
+
+    def refresh(self, _event=None) -> None:
         inspect = self.mode.get() == "Inspect"
-        if inspect:
-            self.target.set("One URL")
-        self.target_box.configure(values=("One URL",) if inspect else ("One URL", "All apps in apps.json"))
         for control in self.mode_buttons:
             control.configure(state="disabled" if self.busy else "normal")
         self.function_box.configure(state="disabled" if self.busy or inspect else "readonly")
-        self.target_box.configure(state="disabled" if self.busy or inspect else "readonly")
-        self.url_entry.configure(state="disabled" if self.busy or self.target.get() != "One URL" else "normal")
-        self.button.configure(text="Inspect page" if inspect else "Run workflow", state="disabled" if self.busy else "normal")
+        self.inventory_box.configure(
+            state="disabled" if self.busy or inspect else "readonly"
+        )
+        picker_state = "disabled" if self.busy else "normal"
+        self.apps_list.configure(state=picker_state)
+        self.select_all_button.configure(state=picker_state)
+        self.clear_button.configure(state=picker_state)
+        self.url_entry.configure(state="disabled" if self.busy else "normal")
 
+        if inspect:
+            self.inventory_label.grid_remove()
+            self.inventory_box.grid_remove()
+            self.apps_label.grid_remove()
+            self.app_picker.grid_remove()
+            self.url_label.grid()
+            self.url_entry.grid()
+        else:
+            self.url_label.grid_remove()
+            self.url_entry.grid_remove()
+            self.inventory_label.grid()
+            self.inventory_box.grid()
+            self.apps_label.grid()
+            self.app_picker.grid()
+        self.button.configure(
+            text="Inspect page" if inspect else "Run workflow",
+            state="disabled" if self.busy else "normal",
+        )
 
     def append(self, text: str) -> None:
         self.output.configure(state="normal")
@@ -151,7 +345,12 @@ class Launcher:
         if self.busy:
             return
         try:
-            args = build_arguments(self.mode.get(), self.function.get(), self.target.get(), self.url.get())
+            args = build_arguments(
+                self.mode.get(),
+                self.function.get(),
+                self.url.get(),
+                self.selected_app_names(),
+            )
         except ValueError as exc:
             messagebox.showerror("Check your selection", str(exc), parent=self.window)
             return
@@ -162,10 +361,19 @@ class Launcher:
         self.status_label.configure(foreground="#6554d9")
         self.status.set(f"{self.mode.get()} in progress...")
         self.append("\nStarting " + self.mode.get().lower() + "...\n")
+        if self.mode.get() == "Run":
+            self.append(
+                f"Selected {len(self.selected_app_names())} app(s) from "
+                f"{self.inventory.get()}.\n"
+            )
         self.refresh()
-        threading.Thread(target=self.execute, args=(args,), daemon=True).start()
+        threading.Thread(
+            target=self.execute,
+            args=(args, self.inventory.get()),
+            daemon=True,
+        ).start()
 
-    def execute(self, args: list[str]) -> None:
+    def execute(self, args: list[str], inventory: str) -> None:
         executable = Path(sys.executable)
         if executable.name.lower() == "pythonw.exe":
             executable = executable.with_name("python.exe")
@@ -174,7 +382,11 @@ class Launcher:
                 [str(executable), "-u", str(ROOT / "main.py"), *args],
                 cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace",
-                env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                env={
+                    **os.environ,
+                    "APPS_FILE": str(ROOT / inventory),
+                    "PYTHONIOENCODING": "utf-8",
+                },
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             ) as process:
                 for line in process.stdout:
@@ -197,7 +409,11 @@ class Launcher:
                 self.busy = False
                 self.progress.stop()
                 self.status_label.configure(foreground="#20835d" if value == 0 else "#bd4352")
-                self.status.set("Finished successfully" if value == 0 else "Failed or incomplete — review output and report")
+                self.status.set(
+                    "Finished successfully"
+                    if value == 0
+                    else "Failed or incomplete — review output and report"
+                )
                 self.refresh()
         self.update_links()
         self.window.after(100, self.poll)
@@ -208,13 +424,21 @@ class Launcher:
             if marker not in line:
                 continue
             candidate = Path(line.split(marker, 1)[1].strip()).resolve()
-            directory = (self.settings.inspections_dir if kind == "inspection" else self.settings.reports_dir).resolve()
+            directory = (
+                self.settings.inspections_dir
+                if kind == "inspection"
+                else self.settings.reports_dir
+            ).resolve()
             suffix = ".json" if kind == "inspection" else ".xlsx"
             if candidate.parent == directory and candidate.suffix.lower() == suffix:
                 self.artifacts[kind] = candidate
 
     def update_links(self) -> None:
-        for kind, button in (("inspection", self.inspection_button), ("report", self.report_button)):
+        buttons = (
+            ("inspection", self.inspection_button),
+            ("report", self.report_button),
+        )
+        for kind, button in buttons:
             path = self.artifacts[kind]
             button.configure(state="normal" if path and path.is_file() else "disabled")
 
@@ -222,7 +446,11 @@ class Launcher:
         path = self.artifacts[kind]
         if not path or not path.is_file():
             self.update_links()
-            messagebox.showinfo("File unavailable", "The file has not been created yet or has been moved.", parent=self.window)
+            messagebox.showinfo(
+                "File unavailable",
+                "The file has not been created yet or has been moved.",
+                parent=self.window,
+            )
             return
         try:
             os.startfile(str(path))
@@ -231,7 +459,12 @@ class Launcher:
 
     def close(self) -> None:
         if self.busy:
-            messagebox.showinfo("Operation active", "Wait for the run to finish. To finish inspection, close the automation browser.", parent=self.window)
+            messagebox.showinfo(
+                "Operation active",
+                "Wait for the run to finish. To finish inspection, close the "
+                "automation browser.",
+                parent=self.window,
+            )
         else:
             self.window.destroy()
 

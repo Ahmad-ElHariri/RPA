@@ -1,18 +1,12 @@
 """Playwright and persistent Google Chrome lifecycle management."""
 
 from __future__ import annotations
+
 import logging
 import re
 from pathlib import Path
 from types import TracebackType
-from playwright.sync_api import (
-    BrowserContext,
-    Error as PlaywrightError,
-    Page,
-    Playwright,
-    TimeoutError as PlaywrightTimeoutError,
-    sync_playwright,
-)
+
 from playwright.async_api import (
     BrowserContext as AsyncBrowserContext,
     Error as AsyncPlaywrightError,
@@ -21,7 +15,16 @@ from playwright.async_api import (
     TimeoutError as AsyncPlaywrightTimeoutError,
     async_playwright,
 )
-from backend.config import lebanon_now, Settings
+from playwright.sync_api import (
+    BrowserContext,
+    Error as PlaywrightError,
+    Page,
+    Playwright,
+    TimeoutError as PlaywrightTimeoutError,
+    sync_playwright,
+)
+
+from backend.config import Settings, lebanon_now
 
 
 LOGGER = logging.getLogger(__name__)
@@ -83,11 +86,10 @@ class BrowserSession:
         return open_pages[0] if open_pages else self.context.new_page()
 
     def navigate(self, url: str) -> Page:
-        target = url
         page = self.page
         LOGGER.info("Opening configured Airtable page")
         try:
-            page.goto(target, wait_until="domcontentloaded")
+            page.goto(url, wait_until="domcontentloaded")
         except PlaywrightTimeoutError as exc:
             raise NavigationError(
                 "Airtable did not finish its initial navigation before the timeout"

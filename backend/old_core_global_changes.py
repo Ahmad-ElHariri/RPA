@@ -1,15 +1,29 @@
 """Registered Airtable business workflows."""
+
 from __future__ import annotations
+
 import re
 import time
 from collections.abc import Awaitable, Callable
-from urllib.parse import urlparse
-from playwright.async_api import ElementHandle, Error as PlaywrightError, Frame, Locator, Page
-from backend.config import Settings
-from backend.airtable_actions import (
-    ActionReport, CandidateResult, Outcome, _CandidateError,
-    _new_report, _register, _require_one,
+
+from playwright.async_api import (
+    ElementHandle,
+    Error as PlaywrightError,
+    Frame,
+    Locator,
+    Page,
 )
+
+from backend.airtable_actions import (
+    ActionReport,
+    CandidateResult,
+    Outcome,
+    _CandidateError,
+    _new_report,
+    _register,
+    _require_one,
+)
+from backend.config import Settings
 
 # 1. CORE workflow targets: approval emails and Smart Import configuration.
 _AUTOMATION_NAME = "[CORE] Send for Approval"

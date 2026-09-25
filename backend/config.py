@@ -8,9 +8,9 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from zoneinfo import ZoneInfo
 from pathlib import Path
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 
 LEBANON_TIMEZONE = ZoneInfo("Asia/Beirut")
@@ -23,7 +23,11 @@ def lebanon_now() -> datetime:
 class _LebanonFormatter(logging.Formatter):
     def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
         timestamp = datetime.fromtimestamp(record.created, LEBANON_TIMEZONE)
-        return timestamp.strftime(datefmt) if datefmt else timestamp.isoformat(timespec="seconds")
+        return (
+            timestamp.strftime(datefmt)
+            if datefmt
+            else timestamp.isoformat(timespec="seconds")
+        )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

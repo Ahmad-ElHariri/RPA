@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from backend.config import lebanon_now
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from backend.airtable_actions import Outcome
+from backend.config import lebanon_now
 from backend.runner import AppActionExecution, RunSummary
 
 
